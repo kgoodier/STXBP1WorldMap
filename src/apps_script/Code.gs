@@ -17,7 +17,7 @@ const CITY_FIELD = 'City';
 const STATE_PROV_FIELD = 'State/Province';
 const COUNTRY_FIELD = 'Country';
 const YEAR_BORN_FIELD = 'Year born';
-const WHAT_TO_SHOW_FIELD = 'How would you like to be shown on our community world map?';
+const WHAT_TO_SHOW_FIELD = 'How would you like to be shown on our community world map';
 
 // Change these to the EXACT name of the options for the "How would you like
 // to be shown..." question in the form.
@@ -37,32 +37,44 @@ const GEO_FIELD_COUNT = 5;
 
 const today = new Date();
 
-// Process a GET request to this webapp.
+// Process a GET request to this webapp. We could support parameters, but don't need that yet.
 function doGet(e) {
   const geo = Maps.newGeocoder();
   const ss = SpreadsheetApp.openByUrl(spreadsheetUrl);
 
   // Raw user-supplied data
   const userSheet = ss.getSheetByName(spreadsheetTabName);
+  if (!userSheet) {
+    Logger.log(`ERROR: no sheet named '${spreadsheetTabName}' found`);
+    return new ContentService.createTextOutput("Server error: no sheet found");
+  }
   const userData = userSheet.getDataRange().getValues();
   //Logger.log("Sheet data: %s", userData);  // REMOVE
 
   // Bookkeeping for cached geodata
   var geoSheet = ss.getSheetByName(spreadsheetGeodataTabName);
   if (!geoSheet) {
-    Logger.log("Creating 'Geodata' sheet");
-    geoSheet = ss.insertSheet(spreadsheetGeodataTabName);
+    Logger.log(`Creating '${spreadsheetGeodataTabName}' sheet`);
+    try {
+      geoSheet = ss.insertSheet(spreadsheetGeodataTabName);
+    } catch (e) {
+      Logger.log(`ERROR: inserting '${spreadsheetGeodataTabName}' sheet failed: ${e}`);
+    }
   }
 
   // Check headers (just overwrite them)
   const headers = ['lat', 'lng', 'country', 'state', 'city'];
-  geoSheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-
-  // Cached geo data
-  const geoRange = geoSheet.getDataRange();
-  const geoData = geoRange.getValues().slice(1);
-  //Logger.log("Geo data: %s", geoData);  // REMOVE
-
+  var geoData = [];
+  if (geoSheet) {
+    geoSheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    // Cached geo data
+    const geoRange = geoSheet.getDataRange();
+    if (geoRange) {
+      const geoData = geoRange.getValues().slice(1);
+      //Logger.log("Geo data: %s", geoData);  // REMOVE
+    }
+  }
+  
   // Build reverse map of header name to column index
   //Logger.log("Column names: %s", userData[0]);
   const h2c = new Map();
@@ -97,22 +109,27 @@ function doGet(e) {
   // Helper function: convert address to lat/lng and city/state/country.
   function doGeocode(userRow) {
     const inputLocation = getInputLocation(userRow);
-    Logger.log('Performing geocode lookup for: %s, from %s', inputLocation, userRow);
-    const geoResponse = geo.geocode(inputLocation);
-    Logger.log(JSON.stringify(geoResponse, null, '  '));  // REMOVE
+    //Logger.log('Performing geocode lookup for: %s, from %s', inputLocation, userRow);
+    try {
+      const geoResponse = geo.geocode(inputLocation);
+      //Logger.log(JSON.stringify(geoResponse, null, '  '));  // REMOVE
 
-    if (geoResponse.status === 'OK') {
-      // There may be multiple locations in the response. We'll use the first one, I guess.
-      const location = geoResponse.results[0];
-      return [
-        location.geometry.location.lat,
-        location.geometry.location.lng,
-        getComponent(location, 'country') || "BUG: No country geocoded",
-        getComponent(location, 'administrative_area_level_1') || '',
-        getComponent(location, 'locality') || ''
-      ];
-    } else {
-      Logger.log('ERROR: invalid location "%s", geocode returned: %s', inputLocation, geoResponse);
+      if (geoResponse.status === 'OK') {
+        // There may be multiple locations in the response. We'll use the first one, I guess.
+        const location = geoResponse.results[0];
+        return [
+          location.geometry.location.lat,
+          location.geometry.location.lng,
+          getComponent(location, 'country') || "BUG: No country geocoded",
+          getComponent(location, 'administrative_area_level_1') || '',
+          getComponent(location, 'locality') || ''
+        ];
+      } else {
+        Logger.log('ERROR: invalid location "%s", geocode returned: %s', inputLocation, geoResponse);
+        return [0, 0, 'ERROR'];
+      }
+    } catch (e) {
+      Logger.log(`ERROR: geocode returned: ${e}`);
       return [0, 0, 'ERROR'];
     }
   }
@@ -170,6 +187,12 @@ function doGet(e) {
         break;
     }
 
+    // What if the individual is the full name? We don't want to show the last name.
+    // Let's assume the first token is the full first name?
+    if (individual) {
+      individual = individual.split(' ')[0];
+    }
+
     // We didn't ask about showing the registrant's name, only the name of the
     // STXBP1 person. We're only going to show first names. We could show last name,
     // or show nothing.
@@ -201,17 +224,19 @@ function doGet(e) {
   });
 
   // Store all the geodata back to the sheet for caching. Skip the header row!
-  geoSheet
-    .getRange(2, 1, geoData.length, geoData[0].length)
-    .setValues(geoData);
+  if (geoSheet) {
+    geoSheet
+      .getRange(2, 1, geoData.length, geoData[0].length)
+      .setValues(geoData);
+  }
 
   // Build the response and send it
   const response = {
     markers: markers,
     countries: Array.from(countryTally).sort((a, b) => b[1] - a[1])
   };
-  //Logger.log('OUTPUT');
-  //Logger.log(JSON.stringify(response, null, '  '));
+  Logger.log('OUTPUT');
+  Logger.log(JSON.stringify(response, null, '  '));
   return ContentService
     .createTextOutput(JSON.stringify(response))
     .setMimeType(ContentService.MimeType.JSON);
